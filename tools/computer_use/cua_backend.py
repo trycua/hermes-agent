@@ -312,11 +312,17 @@ def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[
                 )
             except (TypeError, ValueError):
                 bounds = (0, 0, 0, 0)
+        # Surface 6: opaque element_token. cua-driver-rs format is
+        # `s{snapshot_hex}:{index}`. We treat it as a black-box string —
+        # the driver owns the parse + LRU semantics.
+        raw_token = raw.get("element_token")
+        token = raw_token if isinstance(raw_token, str) and raw_token else None
         elements.append(UIElement(
             index=idx,
             role=role,
             label=label,
             bounds=bounds,
+            element_token=token,
         ))
     return elements
 
@@ -693,6 +699,14 @@ class CuaDriverBackend(ComputerUseBackend):
         self._active_pid: Optional[int] = None
         self._active_window_id: Optional[int] = None
         self._last_app: Optional[str] = None  # last app name targeted via capture/focus_app
+        # Surface 6 of NousResearch/hermes-agent#47072: per-snapshot
+        # `element_index -> element_token` map populated on capture().
+        # Action tools (click/scroll/set_value/...) attach the matching
+        # token alongside `element_index` so cua-driver detects "stale"
+        # explicitly instead of silently re-resolving to a different
+        # element. Cleared whenever a fresh capture overwrites the
+        # snapshot context.
+        self._snapshot_tokens: Dict[int, str] = {}
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
@@ -838,6 +852,17 @@ class CuaDriverBackend(ComputerUseBackend):
                 elements = _parse_elements_from_structured(sc_elements)
             else:
                 elements = _parse_elements_from_tree(tree) if tree else []
+
+            # Surface 6: refresh the snapshot-token cache from this
+            # capture. Tokens are tied to a specific cua-driver snapshot
+            # — when a fresh capture lands, the prior snapshot's tokens
+            # are stale, so we overwrite the whole map (and clear it
+            # entirely when the new capture carries none).
+            self._snapshot_tokens = {
+                e.index: e.element_token
+                for e in elements
+                if e.element_token
+            }
 
             if gws_out["images"]:
                 png_b64 = gws_out["images"][0]
@@ -1086,7 +1111,36 @@ class CuaDriverBackend(ComputerUseBackend):
                             message=f"No on-screen window found for app '{app}'.")
 
     # ── Internal ───────────────────────────────────────────────────
+    def _maybe_attach_element_token(self, tool: str, args: Dict[str, Any]) -> None:
+        """Surface 6: when the wrapper is about to call a token-capable
+        tool with `element_index`, look up the matching `element_token`
+        from the last snapshot and attach it. cua-driver-rs's contract
+        for combined args is documented in trycua/cua#1961:
+
+          "element_token takes precedence over element_index when both
+           supplied. Returns an explicit 'stale' error if the snapshot
+           has been superseded."
+
+        Gated on the per-tool capability claim so we don't send the
+        field to drivers that predate the surface (which would reject
+        the schema with `additionalProperties: false`).
+        """
+        idx = args.get("element_index")
+        if not isinstance(idx, int):
+            return
+        token = self._snapshot_tokens.get(idx)
+        if not token:
+            return
+        if not self._session.supports_capability(
+            "accessibility.element_tokens", tool=tool
+        ):
+            return
+        args["element_token"] = token
+
     def _action(self, name: str, args: Dict[str, Any]) -> ActionResult:
+        # Attach the snapshot's element_token whenever the call carries
+        # an element_index and the target tool advertises support.
+        self._maybe_attach_element_token(name, args)
         try:
             out = self._session.call_tool(name, args)
         except Exception as e:

@@ -2153,3 +2153,155 @@ class TestCapabilityDiscovery:
                                            tool="type_text") is False
         # Unknown tool → False (instead of KeyError).
         assert session.supports_capability("anything", tool="never_registered") is False
+
+
+class TestElementTokenAttachment:
+    """Surface 6 (NousResearch/hermes-agent#47072): trycua/cua#1961 added
+    an opaque `element_token` alongside `element_index` so the wrapper
+    can carry per-snapshot handles instead of relying on raw indices that
+    silently re-resolve when the snapshot is superseded.
+
+    The contract the wrapper implements:
+    1. capture() refreshes a per-snapshot {index -> token} map from
+       structuredContent.elements.
+    2. Whenever an action carrying element_index is about to hit cua-driver,
+       look up the matching token and attach it — but ONLY for tools that
+       advertise `accessibility.element_tokens` (Surface 4 gate). Older
+       drivers reject unknown args via additionalProperties=false.
+    3. cua-driver prefers token over index when both are supplied, so
+       sending both is safe and stale-detection becomes explicit.
+    """
+
+    def _backend_with_session(self, capabilities):
+        """Build a backend whose session reports the given capabilities map."""
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.return_value = {
+            "data": "ok", "images": [], "image_mime_types": [],
+            "structuredContent": None, "isError": False,
+        }
+        # `supports_capability(cap, tool=None)` honors the supplied map.
+        def _supports(cap, tool=None):
+            if tool is not None:
+                return cap in capabilities.get(tool, set())
+            return any(cap in caps for caps in capabilities.values())
+        backend._session.supports_capability = _supports
+        backend._active_pid = 111
+        backend._active_window_id = 222
+        return backend
+
+    def test_token_attached_when_tool_advertises_capability(self):
+        backend = self._backend_with_session({
+            "click": {"input.pointer.click", "accessibility.element_tokens"},
+        })
+        backend._snapshot_tokens = {5: "s0001:5", 6: "s0001:6"}
+        backend.click(element=5, button="left")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "click"
+        assert args["element_index"] == 5
+        # The matching token rode along — cua-driver will prefer it.
+        assert args["element_token"] == "s0001:5"
+
+    def test_token_NOT_attached_when_tool_lacks_capability(self):
+        """Older driver (no element_tokens capability) → don't send the
+        field, since the schema would reject unknown args."""
+        backend = self._backend_with_session({
+            "click": {"input.pointer.click"},  # no element_tokens
+        })
+        backend._snapshot_tokens = {5: "s0001:5"}
+        backend.click(element=5, button="left")
+        name, args = backend._session.call_tool.call_args.args
+        assert "element_token" not in args, (
+            "must not send element_token to a tool that doesn't claim the capability"
+        )
+
+    def test_no_token_when_snapshot_map_empty(self):
+        """No prior capture() → no tokens to attach. The call still
+        proceeds with element_index as before."""
+        backend = self._backend_with_session({
+            "click": {"accessibility.element_tokens"},
+        })
+        backend._snapshot_tokens = {}
+        backend.click(element=5, button="left")
+        name, args = backend._session.call_tool.call_args.args
+        assert "element_token" not in args
+        assert args["element_index"] == 5
+
+    def test_no_token_when_xy_click_not_element(self):
+        """Pixel-coordinate clicks have no element_index, so there's
+        nothing to look up — no token gets attached."""
+        backend = self._backend_with_session({
+            "click": {"accessibility.element_tokens"},
+        })
+        backend._snapshot_tokens = {5: "s0001:5"}
+        backend.click(x=10, y=20, button="left")
+        name, args = backend._session.call_tool.call_args.args
+        assert "element_token" not in args
+        assert args["x"] == 10 and args["y"] == 20
+
+    def test_token_attached_to_set_value(self):
+        """set_value is in cua-driver's token-accepting set too."""
+        backend = self._backend_with_session({
+            "set_value": {"accessibility.element_tokens", "input.keyboard.type"},
+        })
+        backend._snapshot_tokens = {3: "sff00:3"}
+        backend.set_value("hello", element=3)
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "set_value"
+        assert args["element_token"] == "sff00:3"
+
+    def test_token_attached_to_scroll(self):
+        backend = self._backend_with_session({
+            "scroll": {"input.pointer.scroll", "accessibility.element_tokens"},
+        })
+        backend._snapshot_tokens = {9: "s0042:9"}
+        backend.scroll(direction="down", element=9)
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "scroll"
+        assert args["element_token"] == "s0042:9"
+
+    def test_capture_refreshes_snapshot_tokens(self):
+        """A fresh capture should overwrite any stale tokens from a
+        previous snapshot — token cache invariant: only the latest
+        capture's tokens are eligible for attachment."""
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.supports_capability = lambda cap, tool=None: True
+        # Pretend an earlier capture left this stale state.
+        backend._snapshot_tokens = {99: "stale:99"}
+
+        windows_payload = {"windows": [{
+            "app_name": "Demo", "pid": 9, "window_id": 1,
+            "is_on_screen": True, "title": "", "z_index": 0,
+        }]}
+
+        def fake_call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "image_mime_types": [],
+                        "structuredContent": windows_payload, "isError": False}
+            if name == "get_window_state":
+                return {
+                    "data": '✅ Demo — 2 elements, turn 1\n',
+                    "images": [], "image_mime_types": [],
+                    "structuredContent": {"elements": [
+                        {"element_index": 1, "role": "AXButton", "label": "OK",
+                         "element_token": "snap2:1"},
+                        {"element_index": 2, "role": "AXButton", "label": "X",
+                         "element_token": "snap2:2"},
+                    ]},
+                    "isError": False,
+                }
+            return {"data": "", "images": [], "image_mime_types": [],
+                    "structuredContent": None, "isError": False}
+
+        backend._session.call_tool.side_effect = fake_call_tool
+        backend.capture(mode="ax")
+
+        # Stale 99 token is gone; only the two new tokens remain.
+        assert backend._snapshot_tokens == {1: "snap2:1", 2: "snap2:2"}

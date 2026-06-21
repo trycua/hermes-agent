@@ -24,6 +24,13 @@ class UIElement:
     pid: int = 0                     # owning process PID
     window_id: int = 0               # SkyLight / CG window ID
     attributes: Dict[str, Any] = field(default_factory=dict)
+    # Opaque per-snapshot element handle from cua-driver
+    # (trycua/cua#1961 — Surface 6 of NousResearch/hermes-agent#47072).
+    # When set, downstream calls can pass it alongside `index` for
+    # explicit stale-detection: a stale token returns an error from
+    # cua-driver rather than silently re-resolving to a different
+    # element. None for pre-#1961 drivers that didn't carry the field.
+    element_token: Optional[str] = None
 
     def center(self) -> Tuple[int, int]:
         x, y, w, h = self.bounds
