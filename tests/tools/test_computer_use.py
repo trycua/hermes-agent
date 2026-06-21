@@ -1838,3 +1838,122 @@ class TestImageMimeTypePropagation:
             assert url.startswith("data:image/png;base64,"), (
                 f"sniff fallback should default to PNG; got {url[:32]}"
             )
+
+
+class TestMcpInvocationResolution:
+    """Surface 8 (NousResearch/hermes-agent#47072): instead of hardcoding
+    `["mcp"]` as the cua-driver subcommand, we ask the driver via its
+    `manifest` JSON (trycua/cua#1961) so a future rename or relocation of
+    the MCP subcommand doesn't require a Hermes patch.
+
+    The discovery hop must NEVER prevent the wrapper from starting — every
+    failure mode (no manifest verb, non-zero exit, junk JSON, missing
+    fields, wrong types) falls back to the literal `["mcp"]` baseline.
+    """
+
+    @staticmethod
+    def _fake_run(stdout: str = "", returncode: int = 0, raises: Exception = None):
+        """Build a patched subprocess.run that yields the supplied result."""
+        from unittest.mock import MagicMock
+        def _run(*args, **kwargs):
+            if raises is not None:
+                raise raises
+            proc = MagicMock()
+            proc.stdout = stdout
+            proc.returncode = returncode
+            return proc
+        return _run
+
+    def test_manifest_with_invocation_block_drives_subcommand(self):
+        from unittest.mock import patch
+        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+
+        manifest = (
+            '{"schema_version":"1",'
+            '"mcp_invocation":{"command":"/opt/cua-driver","args":["mcp"]}}'
+        )
+        with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
+            cmd, args = _resolve_mcp_invocation("cua-driver")
+        assert cmd == "/opt/cua-driver"
+        assert args == ["mcp"]
+
+    def test_future_renamed_subcommand_is_honored(self):
+        """The whole point: a future cua-driver that exposes `mcp-stdio`
+        instead of `mcp` keeps working without a Hermes patch."""
+        from unittest.mock import patch
+        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+
+        manifest = (
+            '{"mcp_invocation":'
+            '{"command":"cua-driver","args":["mcp-stdio","--strict"]}}'
+        )
+        with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
+            cmd, args = _resolve_mcp_invocation("cua-driver")
+        assert args == ["mcp-stdio", "--strict"]
+
+    def test_falls_back_when_manifest_missing_command(self):
+        """If the manifest knows the args but not the command, keep our
+        resolved driver path (so HERMES_CUA_DRIVER_CMD still wins)."""
+        from unittest.mock import patch
+        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+
+        manifest = '{"mcp_invocation":{"args":["mcp"]}}'
+        with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
+            cmd, args = _resolve_mcp_invocation("/my/local/cua-driver")
+        assert cmd == "/my/local/cua-driver"
+        assert args == ["mcp"]
+
+    def test_falls_back_on_nonzero_exit(self):
+        from unittest.mock import patch
+        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+
+        with patch("subprocess.run", new=self._fake_run(stdout="", returncode=64)):
+            cmd, args = _resolve_mcp_invocation("cua-driver")
+        assert cmd == "cua-driver"
+        assert args == ["mcp"]
+
+    def test_falls_back_on_subprocess_raise(self):
+        """FileNotFoundError, PermissionError, TimeoutExpired all degrade
+        gracefully — the wrapper still starts with the literal baseline."""
+        from unittest.mock import patch
+        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+
+        with patch("subprocess.run", new=self._fake_run(raises=FileNotFoundError("no such file"))):
+            cmd, args = _resolve_mcp_invocation("cua-driver")
+        assert cmd == "cua-driver"
+        assert args == ["mcp"]
+
+    def test_falls_back_on_junk_json(self):
+        from unittest.mock import patch
+        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+
+        with patch("subprocess.run", new=self._fake_run(stdout="not json")):
+            cmd, args = _resolve_mcp_invocation("cua-driver")
+        assert cmd == "cua-driver"
+        assert args == ["mcp"]
+
+    def test_falls_back_when_invocation_block_absent(self):
+        """Older cua-driver builds that don't know about mcp_invocation
+        still emit a manifest — we degrade to the literal."""
+        from unittest.mock import patch
+        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+
+        manifest = '{"schema_version":"1","subcommands":[]}'
+        with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
+            cmd, args = _resolve_mcp_invocation("cua-driver")
+        assert args == ["mcp"]
+
+    def test_falls_back_on_wrong_arg_types(self):
+        """If the discovery returns garbage shaped almost-right (args as
+        a string instead of a list, etc.), we still fall back rather than
+        passing junk to subprocess.Popen."""
+        from unittest.mock import patch
+        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+
+        manifest = (
+            '{"mcp_invocation":'
+            '{"command":"cua-driver","args":"mcp"}}'  # args should be list
+        )
+        with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
+            cmd, args = _resolve_mcp_invocation("cua-driver")
+        assert args == ["mcp"]

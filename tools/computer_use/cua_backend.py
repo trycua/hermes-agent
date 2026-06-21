@@ -70,7 +70,58 @@ logger = logging.getLogger(__name__)
 # `HERMES_CUA_DRIVER_CMD` at a specific binary instead.
 
 _CUA_DRIVER_CMD = os.environ.get("HERMES_CUA_DRIVER_CMD", "cua-driver")
-_CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport
+_CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
+                            # driver doesn't expose `manifest` — see
+                            # `_resolve_mcp_invocation` below)
+
+
+def _resolve_mcp_invocation(
+    driver_cmd: str,
+    *,
+    timeout: float = 6.0,
+) -> Tuple[str, List[str]]:
+    """Return ``(command, args)`` that spawn cua-driver's stdio MCP server.
+
+    Surface 8 of NousResearch/hermes-agent#47072: instead of hardcoding
+    ``["mcp"]`` we ask the driver itself via ``cua-driver manifest``
+    (trycua/cua#1961). The manifest carries a stable ``mcp_invocation``
+    pointer with both ``command`` and ``args``, so a future cua-driver
+    that renames or relocates the subcommand keeps working without a
+    Hermes patch.
+
+    Falls back to ``(driver_cmd, ["mcp"])`` for older drivers that don't
+    expose ``manifest``, or any indeterminate failure — the wrapper must
+    not refuse to start just because the discovery hop failed.
+    """
+    try:
+        proc = subprocess.run(
+            [driver_cmd, "manifest"],
+            capture_output=True, text=True, timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+    except Exception:
+        return driver_cmd, list(_CUA_DRIVER_ARGS)
+    out = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not out:
+        return driver_cmd, list(_CUA_DRIVER_ARGS)
+    try:
+        manifest = json.loads(out)
+    except (ValueError, TypeError):
+        return driver_cmd, list(_CUA_DRIVER_ARGS)
+    if not isinstance(manifest, dict):
+        return driver_cmd, list(_CUA_DRIVER_ARGS)
+    invocation = manifest.get("mcp_invocation")
+    if not isinstance(invocation, dict):
+        return driver_cmd, list(_CUA_DRIVER_ARGS)
+    args = invocation.get("args")
+    command = invocation.get("command")
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        return driver_cmd, list(_CUA_DRIVER_ARGS)
+    if not isinstance(command, str) or not command:
+        # The driver knows the subcommand but didn't surface its own path.
+        # Keep our resolved driver_cmd; the args are still authoritative.
+        return driver_cmd, args
+    return command, args
 
 # Regex to parse list_windows text output lines:
 #   "- AppName (pid 12345) "Title" [window_id: 67890]"
@@ -385,9 +436,13 @@ class _CuaDriverSession:
         if not cua_driver_binary_available():
             raise RuntimeError(cua_driver_install_hint())
 
+        # Surface 8: ask cua-driver itself which subcommand spawns the MCP
+        # server, instead of hardcoding ["mcp"]. Falls back transparently
+        # for older drivers (or any indeterminate discovery failure).
+        command, args = _resolve_mcp_invocation(_CUA_DRIVER_CMD)
         params = StdioServerParameters(
-            command=_CUA_DRIVER_CMD,
-            args=_CUA_DRIVER_ARGS,
+            command=command,
+            args=args,
             env=_sanitize_subprocess_env(dict(os.environ)),
         )
         stack = AsyncExitStack()
