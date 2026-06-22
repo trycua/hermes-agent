@@ -109,11 +109,17 @@ class TestRegistration:
         assert entry.toolset == "computer_use"
         assert entry.schema["name"] == "computer_use"
 
-    def test_check_fn_false_on_linux(self):
-        # Linux is gated off (cua-driver-rs Linux is alpha), regardless of
-        # whether a cua-driver binary happens to be on PATH.
+    def test_check_fn_true_on_linux_when_binary_present(self):
+        # Linux is supported; gated only on the cua-driver binary resolving.
         from tools.computer_use import tool as cu_tool
-        with patch("tools.computer_use.tool.sys.platform", "linux"):
+        with patch("tools.computer_use.tool.sys.platform", "linux"), \
+             patch("tools.computer_use.cua_backend.cua_driver_binary_available", return_value=True):
+            assert cu_tool.check_computer_use_requirements() is True
+
+    def test_check_fn_false_on_linux_without_binary(self):
+        from tools.computer_use import tool as cu_tool
+        with patch("tools.computer_use.tool.sys.platform", "linux"), \
+             patch("tools.computer_use.cua_backend.cua_driver_binary_available", return_value=False):
             assert cu_tool.check_computer_use_requirements() is False
 
     def test_check_fn_false_on_unsupported_platform(self):

@@ -896,13 +896,14 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 def check_computer_use_requirements() -> bool:
     """Return True iff computer_use can run on this host.
 
-    Conditions: macOS or Windows + cua-driver binary installed (or override
-    via env). cua-driver-rs (the cross-platform Rust port) has every action
-    tool marked VERIFIED on Windows in its PARITY matrix. Linux is alpha
-    today — Linux rows in PARITY are mostly OPEN — so it's gated off until
-    that flips to VERIFIED upstream.
+    Conditions: macOS, Windows, or Linux + cua-driver binary installed (or
+    override via env). cua-driver runs on all three; the Linux path is
+    headed/X11 today (Wayland via XWayland), pure-Wayland progress tracked
+    upstream. Linux users see specific blocked checks via
+    `hermes computer-use doctor` if their session is incomplete (e.g. no
+    DISPLAY set).
     """
-    if sys.platform not in ("darwin", "win32"):
+    if sys.platform not in ("darwin", "win32", "linux"):
         return False
     from tools.computer_use.cua_backend import cua_driver_binary_available
     return cua_driver_binary_available()

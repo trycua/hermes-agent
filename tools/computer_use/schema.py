@@ -18,8 +18,8 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "description": (
         "Drive the desktop in the background via cua-driver — screenshots, "
         "mouse, keyboard, scroll, drag — without stealing the user's cursor "
-        "or keyboard focus. Supported on macOS and Windows. Preferred "
-        "workflow: call with "
+        "or keyboard focus. Supported on macOS, Windows, and Linux. "
+        "Preferred workflow: call with "
         "action='capture' (mode='som' gives numbered element overlays), "
         "then click by `element` index for reliability. Pixel coordinates "
         "are supported for models trained on them. Works on any window — "
