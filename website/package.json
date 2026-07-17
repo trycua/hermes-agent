@@ -36,8 +36,19 @@
     "typescript": "^6.0.3"
   },
   "overrides": {
+    "@babel/core": "7.29.6",
+    "dompurify": "3.4.11",
+    "http-proxy-middleware@2.0.9": "2.0.10",
+    "joi@17.13.3": "17.13.4",
+    "js-yaml@3.14.2": "3.15.0",
+    "js-yaml@4.1.1": "4.2.0",
+    "launch-editor@2.13.1": "2.14.1",
     "serialize-javascript": "^7.0.5",
-    "uuid": "^14.0.0"
+    "undici@7.27.2": "7.28.0",
+    "uuid": "^14.0.0",
+    "webpack-dev-server@5.2.4": "5.2.5",
+    "websocket-driver": "0.7.5",
+    "ws@7.5.10": "7.5.11"
   },
   "browserslist": {
     "production": [
