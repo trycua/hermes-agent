@@ -104,6 +104,20 @@ class TestCodingContextBlock:
         assert "coding agent" not in _stable_prompt(agent)
 
 
+class TestKanbanGuidance:
+    def test_orchestrator_without_task_omits_worker_protocol(self, monkeypatch):
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        agent = _make_agent(
+            valid_tool_names=["kanban_show"],
+            _kanban_worker_guidance=None,
+        )
+
+        stable = _stable_prompt(agent)
+
+        assert "You have been assigned ONE task" not in stable
+        assert "Call `kanban_show()` first" not in stable
+
+
 class TestTelegramRichMessagesHint:
     """Verify that TELEGRAM_RICH_MESSAGES_HINT is conditionally included."""
 
