@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -26,6 +27,12 @@ class ModalDesktopConfig:
     cua_driver_port: int = 8080
     cua_driver_path: str = "/mcp"
     sandbox_kwargs: Mapping[str, Any] = field(default_factory=dict)
+
+
+# X window mapping lags launch_app (xdg-open returns before the browser maps
+# its window), so a capture that names an expected window briefly waits for it.
+_WINDOW_WAIT_ATTEMPTS = 8
+_WINDOW_WAIT_INTERVAL_S = 0.5
 
 
 class _TransportComputerBackend(ComputerUseBackend):
@@ -54,10 +61,18 @@ class _TransportComputerBackend(ComputerUseBackend):
         if (pid is None) != (window_id is None):
             raise ValueError("capture targeting requires both pid and window_id")
 
-        windows = self.list_windows()
-        target = _capture_target(windows, app=app, pid=pid, window_id=window_id)
+        expects_window = app is not None or pid is not None
+        attempts = _WINDOW_WAIT_ATTEMPTS if expects_window else 1
+        target = None
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(_WINDOW_WAIT_INTERVAL_S)
+            windows = self.list_windows()
+            target = _capture_target(windows, app=app, pid=pid, window_id=window_id)
+            if target is not None:
+                break
         if target is None:
-            return CaptureResult(mode=mode, width=0, height=0, app=app or "")
+            return self._capture_desktop(mode=mode, app=app)
 
         target_pid = _positive_int(target.get("pid"))
         target_window_id = _positive_int(target.get("window_id"))
@@ -87,6 +102,33 @@ class _TransportComputerBackend(ComputerUseBackend):
             app=str(target.get("app_name", target.get("app", app or ""))),
             window_title=str(data.get("title", data.get("window_title", target.get("title", "")))),
             png_bytes_len=_base64_size(png_b64), image_mime_type=image_mime_type,
+        )
+
+    def _capture_desktop(self, *, mode: str, app: Optional[str]) -> CaptureResult:
+        """Full-screen screenshot for captures that resolved no window.
+
+        Reporting the real (possibly empty) screen beats the 0x0 result this
+        used to return, which read as a dead desktop.
+        """
+        result = self.transport.call_tool("get_desktop_state", {})
+        data = _result_data(result)
+        png_b64, image_mime_type = _image_from_result(result, data)
+        width = (
+            _positive_int(data.get("screenshot_width"))
+            or _positive_int(data.get("screen_width"))
+            or 0
+        )
+        height = (
+            _positive_int(data.get("screenshot_height"))
+            or _positive_int(data.get("screen_height"))
+            or 0
+        )
+        if png_b64 and (not width or not height):
+            width, height = _png_dimensions(png_b64)
+        return CaptureResult(
+            mode=mode, width=width, height=height, png_b64=png_b64,
+            app=app or "", png_bytes_len=_base64_size(png_b64),
+            image_mime_type=image_mime_type,
         )
 
     def click(self, **kwargs: Any) -> ActionResult:

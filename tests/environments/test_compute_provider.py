@@ -318,6 +318,78 @@ def test_modal_transport_backend_captures_through_native_cua_window_state() -> N
     ]
 
 
+def test_modal_transport_backend_capture_falls_back_to_the_desktop_screenshot() -> None:
+    transport = Mock()
+    transport.call_tool.side_effect = [
+        {"structuredContent": {"windows": []}},
+        {
+            "content": [{"type": "image", "data": "DESKTOPPNG", "mimeType": "image/png"}],
+            "structuredContent": {"screenshot_width": 1024, "screenshot_height": 768},
+        },
+    ]
+    backend = _TransportComputerBackend(transport)
+
+    capture = backend.capture()
+
+    assert [call.args[0] for call in transport.call_tool.call_args_list] == [
+        "list_windows", "get_desktop_state",
+    ]
+    assert (capture.width, capture.height) == (1024, 768)
+    assert capture.png_b64 == "DESKTOPPNG"
+    assert capture.elements == []
+
+
+def test_modal_transport_backend_capture_waits_for_an_expected_window() -> None:
+    transport = Mock()
+    transport.call_tool.side_effect = [
+        {"structuredContent": {"windows": []}},
+        {"structuredContent": {"windows": [{
+            "app_name": "Chromium-browser", "pid": 220, "window_id": 7,
+            "is_on_screen": True, "title": "Example Domain - Chromium",
+        }]}},
+        {"structuredContent": {
+            "elements": [],
+            "screenshot_png_b64": "WINDOWPNG",
+            "screenshot_mime_type": "image/png",
+            "width": 1005, "height": 748,
+        }},
+    ]
+    backend = _TransportComputerBackend(transport)
+
+    with patch("tools.environments.modal_desktop.time.sleep") as sleep:
+        capture = backend.capture(app="chromium")
+
+    assert [call.args[0] for call in transport.call_tool.call_args_list] == [
+        "list_windows", "list_windows", "get_window_state",
+    ]
+    assert sleep.call_count == 1
+    assert capture.window_title == "Example Domain - Chromium"
+    assert capture.png_b64 == "WINDOWPNG"
+
+
+def test_modal_transport_backend_capture_bounds_the_window_wait() -> None:
+    def respond(tool, arguments):
+        if tool == "list_windows":
+            return {"structuredContent": {"windows": []}}
+        assert tool == "get_desktop_state"
+        return {
+            "content": [{"type": "image", "data": "DESKTOPPNG", "mimeType": "image/png"}],
+            "structuredContent": {"screenshot_width": 1024, "screenshot_height": 768},
+        }
+
+    transport = Mock()
+    transport.call_tool.side_effect = respond
+    backend = _TransportComputerBackend(transport)
+
+    with patch("tools.environments.modal_desktop.time.sleep"):
+        capture = backend.capture(app="chromium")
+
+    tool_calls = [call.args[0] for call in transport.call_tool.call_args_list]
+    assert tool_calls[-1] == "get_desktop_state"
+    assert 1 < len(tool_calls) <= 16
+    assert (capture.width, capture.height) == (1024, 768)
+
+
 def test_modal_transport_backend_surfaces_cua_tool_errors() -> None:
     transport = Mock()
     transport.call_tool.return_value = {
