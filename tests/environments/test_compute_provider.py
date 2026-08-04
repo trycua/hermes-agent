@@ -390,6 +390,94 @@ def test_modal_transport_backend_capture_bounds_the_window_wait() -> None:
     assert (capture.width, capture.height) == (1024, 768)
 
 
+def _hn_window_listing():
+    return {"structuredContent": {"windows": [{
+        "app_name": "Chromium-browser", "title": "Hacker News - Chromium",
+        "pid": 220, "window_id": 7, "is_on_screen": True,
+    }]}}
+
+
+def test_modal_transport_backend_targets_window_scoped_actions() -> None:
+    transport = Mock()
+    ok = {"structuredContent": {"ok": True, "message": "done"}}
+    transport.call_tool.side_effect = [_hn_window_listing(), ok, ok, ok, ok, ok, ok]
+    backend = _TransportComputerBackend(transport)
+
+    backend.click(element=42, click_count=2, modifiers=["shift"])
+    backend.click(x=10, y=20, button="right")
+    backend.type_text("hello")
+    backend.key("ctrl+l")
+    backend.key("Return")
+    backend.scroll(direction="down", amount=5, element=3)
+
+    calls = transport.call_tool.call_args_list
+    assert calls[0].args[0] == "list_windows"
+    assert calls[1].args == ("click", {
+        "pid": 220, "window_id": 7, "button": "left", "count": 2, "element_index": 42,
+    })
+    assert calls[2].args == ("click", {
+        "pid": 220, "window_id": 7, "button": "right", "x": 10.0, "y": 20.0,
+    })
+    assert calls[3].args == ("type_text", {"pid": 220, "window_id": 7, "text": "hello"})
+    assert calls[4].args == ("hotkey", {"pid": 220, "window_id": 7, "keys": ["ctrl", "l"]})
+    assert calls[5].args == ("press_key", {"pid": 220, "window_id": 7, "key": "Return"})
+    assert calls[6].args == ("scroll", {
+        "pid": 220, "window_id": 7, "direction": "down", "amount": 5, "element_index": 3,
+    })
+
+
+def test_modal_transport_backend_capture_primes_the_action_target() -> None:
+    transport = Mock()
+    transport.call_tool.side_effect = [
+        _hn_window_listing(),
+        {"structuredContent": {
+            "elements": [], "screenshot_png_b64": "PNG", "width": 1005, "height": 748,
+        }},
+        {"structuredContent": {"ok": True}},
+    ]
+    backend = _TransportComputerBackend(transport)
+
+    backend.capture(app="chromium")
+    backend.click(element=1)
+
+    tool_names = [call.args[0] for call in transport.call_tool.call_args_list]
+    assert tool_names == ["list_windows", "get_window_state", "click"]
+    assert transport.call_tool.call_args_list[2].args[1]["pid"] == 220
+    assert transport.call_tool.call_args_list[2].args[1]["window_id"] == 7
+
+
+def test_modal_transport_backend_set_value_and_foreground_escalation() -> None:
+    transport = Mock()
+    ok = {"structuredContent": {"ok": True}}
+    transport.call_tool.side_effect = [_hn_window_listing(), ok, ok]
+    backend = _TransportComputerBackend(transport)
+
+    backend.set_value(value="abc", element=5)
+    backend.click(element=1, bring_to_front=True)
+
+    calls = transport.call_tool.call_args_list
+    assert calls[1].args == ("set_value", {
+        "pid": 220, "window_id": 7, "value": "abc", "element_index": 5,
+    })
+    assert calls[2].args[1]["delivery_mode"] == "foreground"
+
+
+def test_modal_transport_backend_drag_requires_coordinates() -> None:
+    transport = Mock()
+    transport.call_tool.side_effect = [_hn_window_listing(), {"structuredContent": {"ok": True}}]
+    backend = _TransportComputerBackend(transport)
+
+    with pytest.raises(ValueError, match="coordinates"):
+        backend.drag(from_element=1, to_element=2)
+
+    backend.drag(from_xy=(1, 2), to_xy=(3, 4), modifiers=["shift"])
+    assert transport.call_tool.call_args_list[1].args == ("drag", {
+        "pid": 220, "window_id": 7,
+        "from_x": 1.0, "from_y": 2.0, "to_x": 3.0, "to_y": 4.0,
+        "modifier": ["shift"],
+    })
+
+
 def test_modal_transport_backend_surfaces_cua_tool_errors() -> None:
     transport = Mock()
     transport.call_tool.return_value = {

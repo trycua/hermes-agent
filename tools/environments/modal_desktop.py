@@ -40,6 +40,9 @@ class _TransportComputerBackend(ComputerUseBackend):
 
     def __init__(self, transport: CuaToolTransport):
         self.transport = transport
+        # (pid, window_id) the driver's window-scoped input tools require.
+        # Primed by capture()/focus_app(), lazily resolved otherwise.
+        self._window_target: Optional[Tuple[int, int]] = None
 
     def start(self) -> None:
         self.transport.start()
@@ -78,6 +81,7 @@ class _TransportComputerBackend(ComputerUseBackend):
         target_window_id = _positive_int(target.get("window_id"))
         if target_pid is None or target_window_id is None:
             raise RuntimeError("CUA list_windows returned a target without pid/window_id")
+        self._window_target = (target_pid, target_window_id)
 
         result = self.transport.call_tool(
             "get_window_state", {"pid": target_pid, "window_id": target_window_id},
@@ -131,20 +135,104 @@ class _TransportComputerBackend(ComputerUseBackend):
             image_mime_type=image_mime_type,
         )
 
-    def click(self, **kwargs: Any) -> ActionResult:
-        return self._action("click", kwargs)
+    # ── Input actions ────────────────────────────────────────────────
+    # The driver's input tools are window-scoped: element_index requires
+    # pid + window_id alongside it and fails fast without them, which is
+    # exactly how the first post-AT-SPI E2E died (8 consecutive
+    # "Missing required integer field: pid" click failures).
 
-    def drag(self, **kwargs: Any) -> ActionResult:
-        return self._action("drag", kwargs)
+    def _action_target(self) -> Tuple[int, int]:
+        if self._window_target is None:
+            target = _capture_target(self.list_windows(), app=None, pid=None, window_id=None)
+            target_pid = _positive_int(target.get("pid")) if target else None
+            target_window_id = _positive_int(target.get("window_id")) if target else None
+            if target_pid is None or target_window_id is None:
+                raise RuntimeError(
+                    "no window target for input action; launch_app or capture first"
+                )
+            self._window_target = (target_pid, target_window_id)
+        return self._window_target
 
-    def scroll(self, **kwargs: Any) -> ActionResult:
-        return self._action("scroll", kwargs)
+    def _targeted_arguments(self, delivery_mode: Optional[str],
+                            bring_to_front: bool) -> Dict[str, Any]:
+        pid, window_id = self._action_target()
+        arguments: Dict[str, Any] = {"pid": pid, "window_id": window_id}
+        if delivery_mode:
+            arguments["delivery_mode"] = delivery_mode
+        elif bring_to_front:
+            # The driver has no bring_to_front flag on inputs; foreground
+            # delivery is its escalation for the same intent.
+            arguments["delivery_mode"] = "foreground"
+        return arguments
 
-    def type_text(self, text: str, **kwargs: Any) -> ActionResult:
-        return self._action("type_text", {"text": text, **kwargs})
+    def click(self, *, element: Optional[int] = None, x: Optional[int] = None,
+              y: Optional[int] = None, button: str = "left", click_count: int = 1,
+              modifiers: Optional[List[str]] = None, delivery_mode: Optional[str] = None,
+              bring_to_front: bool = False) -> ActionResult:
+        del modifiers  # the driver's click has no modifier field
+        arguments = self._targeted_arguments(delivery_mode, bring_to_front)
+        arguments["button"] = button or "left"
+        if int(click_count or 1) != 1:
+            arguments["count"] = int(click_count)
+        if element is not None:
+            arguments["element_index"] = int(element)
+        elif x is not None and y is not None:
+            arguments["x"] = float(x)
+            arguments["y"] = float(y)
+        else:
+            raise ValueError("click requires an element index or x/y coordinates")
+        return self._invoke("click", arguments)
 
-    def key(self, keys: str, **kwargs: Any) -> ActionResult:
-        return self._action("hotkey", {"keys": keys, **kwargs})
+    def drag(self, *, from_element: Optional[int] = None, to_element: Optional[int] = None,
+             from_xy: Optional[Tuple[int, int]] = None, to_xy: Optional[Tuple[int, int]] = None,
+             button: str = "left", modifiers: Optional[List[str]] = None,
+             delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
+        del from_element, to_element  # AT-SPI elements carry no bounds to drag between
+        if not from_xy or not to_xy:
+            raise ValueError("drag on the Modal desktop requires from/to coordinates")
+        arguments = self._targeted_arguments(delivery_mode, bring_to_front)
+        arguments.update({
+            "from_x": float(from_xy[0]), "from_y": float(from_xy[1]),
+            "to_x": float(to_xy[0]), "to_y": float(to_xy[1]),
+        })
+        if button and button != "left":
+            arguments["button"] = button
+        if modifiers:
+            arguments["modifier"] = list(modifiers)
+        return self._invoke("drag", arguments)
+
+    def scroll(self, *, direction: str, amount: int = 3, element: Optional[int] = None,
+               x: Optional[int] = None, y: Optional[int] = None,
+               modifiers: Optional[List[str]] = None, delivery_mode: Optional[str] = None,
+               bring_to_front: bool = False) -> ActionResult:
+        del modifiers  # the driver's scroll has no modifier field
+        arguments = self._targeted_arguments(delivery_mode, bring_to_front)
+        arguments["direction"] = direction
+        arguments["amount"] = max(1, min(50, int(amount or 3)))
+        if element is not None:
+            arguments["element_index"] = int(element)
+        elif x is not None and y is not None:
+            arguments["x"] = float(x)
+            arguments["y"] = float(y)
+        return self._invoke("scroll", arguments)
+
+    def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
+                  bring_to_front: bool = False) -> ActionResult:
+        arguments = self._targeted_arguments(delivery_mode, bring_to_front)
+        arguments["text"] = text
+        return self._invoke("type_text", arguments)
+
+    def key(self, keys: str, *, delivery_mode: Optional[str] = None,
+            bring_to_front: bool = False) -> ActionResult:
+        # Hermes sends one string ("ctrl+l", "Return"); the driver splits the
+        # surface into hotkey (combo array, min 2) and press_key (single key).
+        parts = [part.strip() for part in str(keys).split("+") if part.strip()]
+        arguments = self._targeted_arguments(delivery_mode, bring_to_front)
+        if len(parts) >= 2:
+            arguments["keys"] = parts
+            return self._invoke("hotkey", arguments)
+        arguments["key"] = parts[0] if parts else str(keys)
+        return self._invoke("press_key", arguments)
 
     def list_apps(self) -> List[Dict[str, Any]]:
         result = _result_data(self.transport.call_tool("list_apps", {}))
@@ -157,7 +245,16 @@ class _TransportComputerBackend(ComputerUseBackend):
         return windows if isinstance(windows, list) else []
 
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
-        return self._action("focus_app", {"app": app, "raise_window": raise_window})
+        # The driver has no focus_app tool; resolve the window and use
+        # bring_to_front, which is its window-activation surface.
+        del raise_window
+        target = _capture_target(self.list_windows(), app=app, pid=None, window_id=None)
+        target_pid = _positive_int(target.get("pid")) if target else None
+        target_window_id = _positive_int(target.get("window_id")) if target else None
+        if target_pid is None or target_window_id is None:
+            raise RuntimeError(f"no window found for app {app!r}")
+        self._window_target = (target_pid, target_window_id)
+        return self._invoke("bring_to_front", {"pid": target_pid, "window_id": target_window_id})
 
     def launch_app(
         self,
@@ -184,18 +281,22 @@ class _TransportComputerBackend(ComputerUseBackend):
         return dict(_result_data(self.transport.call_tool("launch_app", arguments)))
 
     def kill_app(self, *, pid: int) -> ActionResult:
-        return self._action("kill_app", {"pid": int(pid)})
+        return self._invoke("kill_app", {"pid": int(pid)})
 
     def bring_to_front(self, *, pid: int, window_id: Optional[int] = None) -> ActionResult:
         arguments: Dict[str, Any] = {"pid": int(pid)}
         if window_id is not None:
             arguments["window_id"] = int(window_id)
-        return self._action("bring_to_front", arguments)
+        return self._invoke("bring_to_front", arguments)
 
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
-        return self._action("set_value", {"value": value, "element": element})
+        pid, window_id = self._action_target()
+        arguments: Dict[str, Any] = {"pid": pid, "window_id": window_id, "value": str(value)}
+        if element is not None:
+            arguments["element_index"] = int(element)
+        return self._invoke("set_value", arguments)
 
-    def _action(self, action: str, arguments: Mapping[str, Any]) -> ActionResult:
+    def _invoke(self, action: str, arguments: Mapping[str, Any]) -> ActionResult:
         data = _result_data(self.transport.call_tool(action, arguments))
         return ActionResult(
             ok=bool(data.get("ok", True)), action=action, message=str(data.get("message", "")),
