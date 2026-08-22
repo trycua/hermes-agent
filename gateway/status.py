@@ -996,6 +996,14 @@ def write_runtime_status(
     payload = _read_json_file(path) or _build_runtime_status_record()
     previous_payload = copy.deepcopy(payload)
     current_record = _build_pid_record()
+
+    # Runtime status belongs to one gateway process. A fresh process must not
+    # inherit fatal adapters, active work, or restart flags from its predecessor.
+    previous_identity = (payload.get("pid"), payload.get("start_time"))
+    current_identity = (current_record.get("pid"), current_record.get("start_time"))
+    if gateway_state == "starting" and previous_identity != current_identity:
+        payload = _build_runtime_status_record()
+
     payload.setdefault("platforms", {})
     payload["kind"] = current_record["kind"]
     payload["pid"] = current_record["pid"]

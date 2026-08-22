@@ -192,6 +192,42 @@ class TestGatewayRuntimeStatus:
         assert payload["pid"] == os.getpid(), "PID should be overwritten, not preserved via setdefault"
         assert payload["start_time"] != 1000.0, "start_time should be overwritten on restart"
 
+    def test_starting_new_process_resets_stale_runtime_fields(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 111,
+            "start_time": 1000,
+            "kind": "hermes-gateway",
+            "gateway_state": "running",
+            "restart_requested": True,
+            "active_agents": 3,
+            "served_profiles": ["default", "coder"],
+            "platforms": {
+                "coder:slack": {
+                    "state": "fatal",
+                    "error_code": "duplicate_credential",
+                }
+            },
+            "updated_at": "2025-01-01T00:00:00Z",
+        }))
+        monkeypatch.setattr(status, "_build_pid_record", lambda: {
+            "pid": 222,
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 2000,
+            "hermes_home": str(tmp_path),
+        })
+
+        status.write_runtime_status(gateway_state="starting", exit_reason=None)
+
+        payload = status.read_runtime_status()
+        assert payload["pid"] == 222
+        assert payload["platforms"] == {}
+        assert payload["active_agents"] == 0
+        assert payload["restart_requested"] is False
+        assert "served_profiles" not in payload
+
 
     def test_runtime_status_running_pid_rejects_pid_reused_by_other_profile(self, monkeypatch):
         """Regression (user report): a stale profile's recycled PID must not be
@@ -1219,4 +1255,3 @@ class TestResolveGatewayLiveness:
         # expected_home is what stops a recycled PID belonging to another
         # profile's live gateway from being reported as this profile's.
         assert seen["expected_home"] == profile_dir
-
