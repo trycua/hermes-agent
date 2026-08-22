@@ -3002,6 +3002,11 @@ class BasePlatformAdapter(ABC):
     # routing is platform-generic instead of Discord-only.
     gateway_runner = None  # type: ignore[assignment]  # set by gateway/run.py
 
+    # Multiplexed secondary adapters are created from one profile's own
+    # credential. Their inbound messages must stay bound to that profile even
+    # when a global channel route for the primary/shared credential matches.
+    owning_profile: Optional[str] = None
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
@@ -7051,11 +7056,13 @@ class BasePlatformAdapter(ABC):
         if chat_topic is not None and not chat_topic.strip():
             chat_topic = None
 
-        # Resolve profile from configured routes (None when no match / no routes)
-        profile = None
+        # A secondary adapter's credential owner is authoritative. Global
+        # profile routes are for the primary/shared credential and must not
+        # collapse several independently identified bots onto one profile.
+        profile = str(getattr(self, "owning_profile", "") or "").strip() or None
         profile_route_rejected = False
         runner = getattr(self, "gateway_runner", None)
-        if runner is not None:
+        if profile is None and runner is not None:
             from gateway.profile_routing import ProfileRouteRejected
 
             try:

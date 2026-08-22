@@ -308,6 +308,58 @@ class TestAdapterToSessionKeyIntegration:
         # A default-profile key would land in agent:main — must differ.
         assert key != build_session_key(source, profile=None)
 
+    def test_secondary_adapter_credential_owner_wins_over_global_route(
+        self, mock_runner
+    ):
+        """A unique secondary bot identity must keep its owning profile.
+
+        Global routes describe the primary/shared credential. Applying them to
+        every secondary adapter would make several Slack bots in one channel
+        all run the same routed profile despite having distinct credentials.
+        """
+        mock_runner.config.profile_routes = [
+            ProfileRoute(
+                name="shared-channel",
+                platform="slack",
+                profile="chief-of-staff",
+                chat_id="C_SHARED",
+            )
+        ]
+        adapter = _stub_adapter(Platform.SLACK, mock_runner)
+        adapter.owning_profile = "software-engineer"
+
+        source = adapter.build_source(
+            chat_id="C_SHARED", chat_type="group", user_id="U_OPERATOR"
+        )
+
+        assert source.profile == "software-engineer"
+        key = build_session_key(source, profile=source.profile)
+        assert key.startswith("agent:software-engineer:"), key
+
+    def test_primary_adapter_without_owner_still_uses_global_route(self, mock_runner):
+        mock_runner.config.profile_routes = [
+            ProfileRoute(
+                name="shared-channel",
+                platform="slack",
+                profile="chief-of-staff",
+                chat_id="C_SHARED",
+            )
+        ]
+        adapter = _stub_adapter(Platform.SLACK, mock_runner)
+
+        with patch(
+            "hermes_cli.profiles.profiles_to_serve",
+            return_value=[
+                ("default", Path("/profiles/default")),
+                ("chief-of-staff", Path("/profiles/chief-of-staff")),
+            ],
+        ):
+            source = adapter.build_source(
+                chat_id="C_SHARED", chat_type="group", user_id="U_OPERATOR"
+            )
+
+        assert source.profile == "chief-of-staff"
+
     @pytest.mark.asyncio
     async def test_adapter_drops_rejected_route_before_dispatch(self, mock_runner):
         mock_runner.config.multiplex_profile_allowlist = []
@@ -385,5 +437,4 @@ class TestMultiplexGate:
         discord_source.profile = None
 
         assert mock_runner._profile_name_for_source(discord_source) is None
-
 
