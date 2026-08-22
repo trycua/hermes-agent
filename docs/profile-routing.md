@@ -105,6 +105,12 @@ If no route matches, the message uses the default/active profile.
    (`source.profile` → active profile → `default`) and the session is scoped per-profile, so
    each routed community gets isolated memory and conversation state.
 
+Multiplexed secondary adapters are already bound to the profile that owns their
+credential. That credential owner takes precedence over `profile_routes`; the
+global routes apply to the primary/shared credential. This keeps several
+independent Slack bots in one channel attached to their own profiles instead of
+collapsing them all onto the channel's primary route.
+
 Because `gateway_runner` is injected for **all** adapters (declared on `BasePlatformAdapter`),
 every platform goes through this path — not just Discord.
 

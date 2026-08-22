@@ -250,6 +250,12 @@ communities share **one** bot token — for example one Discord bot serving many
 guilds — you can additionally route specific guilds/channels/threads to
 different profiles with `gateway.profile_routes`:
 
+The credential binding wins for secondary profile adapters. In other words, a
+Slack app/token configured on `software-engineer` always runs that profile,
+even in a channel that the primary shared Slack app routes to another profile.
+`profile_routes` select profiles for the primary/shared credential; they do not
+rewrite the identity of independently credentialed peer bots.
+
 ```yaml
 gateway:
   multiplex_profiles: true
