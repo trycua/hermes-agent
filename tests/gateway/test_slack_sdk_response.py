@@ -113,9 +113,11 @@ def _make_adapter():
     adapter._user_name_cache = {}
     adapter._user_is_bot_cache = {}
     adapter._channel_name_cache = {}
+    adapter._channel_info_cache = {}
     adapter._channel_team = {}
     adapter._USER_NAME_CACHE_MAX = 5000
     adapter._CHANNEL_NAME_CACHE_MAX = 5000
+    adapter._CHANNEL_INFO_CACHE_MAX = 5000
     return adapter
 
 
@@ -182,6 +184,20 @@ class TestIdentityResolution:
         )
         adapter._get_client = lambda *_a, **_kw: client
         assert asyncio.run(adapter._resolve_channel_name("C_GEN")) == "general"
+
+    @response_shape
+    def test_channel_info_resolves_and_is_cached(self, make_response):
+        adapter = _make_adapter()
+        client = MagicMock()
+        channel = {"name": "b-project-alpha", "is_private": True, "is_member": True}
+        client.conversations_info = AsyncMock(
+            return_value=make_response({"ok": True, "channel": channel})
+        )
+        adapter._get_client = lambda *_a, **_kw: client
+
+        assert asyncio.run(adapter._resolve_channel_info("C_PROJECT")) == channel
+        assert asyncio.run(adapter._resolve_channel_info("C_PROJECT")) == channel
+        client.conversations_info.assert_awaited_once()
 
     def test_unknown_shape_still_falls_back_to_the_id(self):
         """Degradation for genuinely unreadable responses must be preserved."""
