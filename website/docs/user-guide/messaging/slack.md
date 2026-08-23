@@ -766,7 +766,7 @@ Failure buckets:
 
 If this target passes but a live workspace still misroutes messages, investigate Slack token/workspace connectivity and runtime deployment state outside the routing logic itself.
 
-### Channel allowlist (`allowed_channels`)
+### Channel allowlist
 
 Restrict the bot to a fixed set of Slack channels — useful when the bot is invited to many channels but should only respond in a few. When set, messages from channels NOT in this list are **silently ignored**, even if the bot is `@mentioned`.
 
@@ -785,10 +785,33 @@ Or via env var (comma-separated):
 SLACK_ALLOWED_CHANNELS="C0123456789,C0987654321"
 ```
 
+To admit newly created private project channels without registering each
+channel ID, add one or more channel-name prefixes:
+
+```yaml
+slack:
+  allowed_channels:
+    - "C0123456789"
+  allowed_private_channel_prefixes:
+    - "b-"
+```
+
+Or via env var:
+
+```bash
+SLACK_ALLOWED_PRIVATE_CHANNEL_PREFIXES="b-"
+```
+
+A prefix match is accepted only when Slack confirms that the conversation is
+a private channel and the bot is currently a member. Public channels, group
+DMs, non-member channels, missing metadata, and Slack API failures are denied.
+Exact channel IDs and private-channel prefixes form a union, so explicit IDs
+remain useful for exceptions that do not follow the naming convention.
+
 Behavior:
 
-- Empty / unset → no restriction (fully backward compatible).
-- Non-empty → channel ID must be on the list, or the message is dropped before any other gating (mention requirement, `free_response_channels`, etc.) runs.
+- Both settings empty / unset → no restriction (fully backward compatible).
+- Either setting non-empty → the channel must match an exact ID or a verified private-channel prefix, or the message is dropped before any other gating (mention requirement, `free_response_channels`, etc.) runs.
 - Slack channel IDs start with `C` (public), `G` (private), or `D` (DM). Look them up via the Slack UI's "Open channel details" → "About" panel, or via the API.
 
 See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).

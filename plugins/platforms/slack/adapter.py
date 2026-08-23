@@ -947,6 +947,11 @@ class SlackAdapter(BasePlatformAdapter):
         # per-user).
         self._channel_name_cache: Dict[Tuple[str, str], str] = {}
         self._CHANNEL_NAME_CACHE_MAX = 5000
+        # Channel metadata used by dynamic private-channel allowlisting.
+        # Keep this separate from the display-name cache because the policy
+        # also needs Slack's privacy and membership flags.
+        self._channel_info_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._CHANNEL_INFO_CACHE_MAX = 5000
         # (team_id, user_id) → Slack bot identity, same workspace scoping as
         # the name cache. Used to catch peer-agent posts that arrive as plain
         # user messages without bot_id/subtype=bot_message markers.
@@ -4386,6 +4391,38 @@ class SlackAdapter(BasePlatformAdapter):
         )
         return name
 
+    async def _resolve_channel_info(
+        self, channel_id: str, team_id: str = ""
+    ) -> Optional[Dict[str, Any]]:
+        """Return cached Slack channel metadata, or ``None`` on failure."""
+        if not channel_id or not self._app:
+            return None
+        team_id = str(team_id or self._channel_team.get(channel_id, ""))
+        cache_key = (team_id, str(channel_id))
+        cache = getattr(self, "_channel_info_cache", None)
+        if cache is None:
+            cache = {}
+            self._channel_info_cache = cache
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            resp = await self._get_client(
+                channel_id, team_id=team_id or None
+            ).conversations_info(channel=channel_id)
+            payload = _slack_response_payload(resp)
+            channel = payload.get("channel") if payload.get("ok") else None
+            if not isinstance(channel, dict):
+                return None
+        except Exception as e:
+            logger.debug("[Slack] conversations.info failed for %s: %s", channel_id, e)
+            return None
+        cache[cache_key] = channel
+        self._trim_oldest_dict_entries(
+            cache, getattr(self, "_CHANNEL_INFO_CACHE_MAX", 5000)
+        )
+        return channel
+
     async def _humanize_user_mentions(
         self, text: str, chat_id: str = "", team_id: str = ""
     ) -> str:
@@ -6160,9 +6197,10 @@ class SlackAdapter(BasePlatformAdapter):
                     return
 
         if not is_one_to_one_dm and bot_uid:
-            # Check allowed channels — if set, only respond in these channels (whitelist)
-            allowed_channels = self._slack_allowed_channels()
-            if allowed_channels and channel_id not in allowed_channels:
+            # Exact channel IDs and joined private channel-name prefixes form
+            # one allowlist. Prefix lookup fails closed on missing metadata or
+            # Slack API errors.
+            if not await self._slack_channel_is_allowed(channel_id, team_id=team_id):
                 logger.debug(
                     "[Slack] Ignoring message in non-allowed channel: %s", channel_id
                 )
@@ -8909,6 +8947,46 @@ class SlackAdapter(BasePlatformAdapter):
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
 
+    def _slack_allowed_private_channel_prefixes(self) -> set:
+        """Return channel-name prefixes allowed through the Slack gate.
+
+        Prefix matches are intentionally limited to private channels where
+        Slack reports this app as a member. This lets operators safely admit
+        newly created project channels without copying channel IDs into the
+        configuration first.
+        """
+        raw = self.config.extra.get("allowed_private_channel_prefixes")
+        if raw is None:
+            raw = os.getenv("SLACK_ALLOWED_PRIVATE_CHANNEL_PREFIXES", "")
+        if isinstance(raw, (list, tuple, set)):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()
+
+    async def _slack_channel_is_allowed(
+        self, channel_id: str, team_id: str = ""
+    ) -> bool:
+        """Apply exact-ID and joined-private-prefix allowlisting."""
+        allowed_channels = self._slack_allowed_channels()
+        prefixes = self._slack_allowed_private_channel_prefixes()
+        if not allowed_channels and not prefixes:
+            return True
+        if channel_id in allowed_channels:
+            return True
+        if not prefixes:
+            return False
+
+        channel = await self._resolve_channel_info(channel_id, team_id=team_id)
+        if not channel:
+            return False
+        if channel.get("is_im") or channel.get("is_mpim"):
+            return False
+        if not channel.get("is_private") or not channel.get("is_member"):
+            return False
+        name = str(channel.get("name_normalized") or channel.get("name") or "")
+        return any(name.startswith(prefix) for prefix in prefixes)
+
     def _slack_require_mention_channels(self) -> set:
         """Return channel IDs where a bot @mention is ALWAYS required.
 
@@ -9544,6 +9622,11 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
+    apcp = slack_cfg.get("allowed_private_channel_prefixes")
+    if apcp is not None and not os.getenv("SLACK_ALLOWED_PRIVATE_CHANNEL_PREFIXES"):
+        if isinstance(apcp, list):
+            apcp = ",".join(str(v) for v in apcp)
+        os.environ["SLACK_ALLOWED_PRIVATE_CHANNEL_PREFIXES"] = str(apcp)
     # ignored_channels: blacklist channels where Slack must never respond.
     ic = slack_cfg.get("ignored_channels")
     if ic is not None and not os.getenv("SLACK_IGNORED_CHANNELS"):

@@ -1,5 +1,6 @@
 import asyncio
 import os
+from unittest.mock import AsyncMock
 
 from gateway.config import PlatformConfig
 from plugins.platforms.slack.adapter import SlackAdapter, _apply_yaml_config
@@ -57,6 +58,48 @@ def test_thread_require_mention_env_bridge(monkeypatch):
     )
 
     assert os.environ["SLACK_THREAD_REQUIRE_MENTION"] == "true"
+
+
+def test_allowed_private_channel_prefixes_env_bridge(monkeypatch):
+    monkeypatch.delenv("SLACK_ALLOWED_PRIVATE_CHANNEL_PREFIXES", raising=False)
+
+    _apply_yaml_config(
+        {},
+        {
+            "allowed_private_channel_prefixes": ["b-", "project-"],
+        },
+    )
+
+    assert os.environ["SLACK_ALLOWED_PRIVATE_CHANNEL_PREFIXES"] == "b-,project-"
+
+
+def test_private_prefix_channel_still_requires_explicit_mention():
+    adapter = make_adapter(
+        {
+            "allowed_private_channel_prefixes": ["b-"],
+            "require_mention": True,
+            "reply_in_thread": True,
+        }
+    )
+    adapter._resolve_channel_info = AsyncMock(
+        return_value={"name": "b-project-alpha", "is_private": True, "is_member": True}
+    )
+    handled = []
+
+    async def capture(event):
+        handled.append(event)
+
+    adapter.handle_message = capture
+
+    run(adapter._handle_slack_message(slack_event("unaddressed request")))
+    assert handled == []
+
+    run(
+        adapter._handle_slack_message(
+            slack_event("<@UBOT> addressed request", ts="101.000")
+        )
+    )
+    assert len(handled) == 1
 
 
 def test_thread_require_mention_parses_yaml_and_env(monkeypatch):

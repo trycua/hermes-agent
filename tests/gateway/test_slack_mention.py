@@ -60,7 +60,8 @@ OTHER_CHANNEL_ID = "C9999999999"
 
 
 def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None,
-                  allowed_channels=None, mention_patterns=None):
+                  allowed_channels=None, allowed_private_channel_prefixes=None,
+                  mention_patterns=None):
     extra = {}
     if require_mention is not None:
         extra["require_mention"] = require_mention
@@ -70,6 +71,8 @@ def _make_adapter(require_mention=None, strict_mention=None, free_response_chann
         extra["free_response_channels"] = free_response_channels
     if allowed_channels is not None:
         extra["allowed_channels"] = allowed_channels
+    if allowed_private_channel_prefixes is not None:
+        extra["allowed_private_channel_prefixes"] = allowed_private_channel_prefixes
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
 
@@ -483,6 +486,52 @@ def test_allowed_channels_env_var_fallback(monkeypatch):
     result = adapter._slack_allowed_channels()
     assert CHANNEL_ID in result
     assert OTHER_CHANNEL_ID in result
+
+
+def test_allowed_private_channel_prefixes_env_var_fallback(monkeypatch):
+    monkeypatch.setenv("SLACK_ALLOWED_PRIVATE_CHANNEL_PREFIXES", "b-,project-")
+    adapter = _make_adapter()
+    assert adapter._slack_allowed_private_channel_prefixes() == {"b-", "project-"}
+
+
+@pytest.mark.asyncio
+async def test_exact_channel_allowlist_wins_without_metadata_lookup():
+    adapter = _make_adapter(
+        allowed_channels=[CHANNEL_ID],
+        allowed_private_channel_prefixes=["b-"],
+    )
+    adapter._resolve_channel_info = AsyncMock()
+
+    assert await adapter._slack_channel_is_allowed(CHANNEL_ID, team_id="T1") is True
+    adapter._resolve_channel_info.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("channel", "expected"),
+    [
+        ({"name": "b-project-alpha", "is_private": True, "is_member": True}, True),
+        ({"name": "b-project-alpha", "is_private": False, "is_member": True}, False),
+        ({"name": "b-project-alpha", "is_private": True, "is_member": False}, False),
+        ({"name": "other-project", "is_private": True, "is_member": True}, False),
+        ({"name": "b-project-alpha", "is_private": True, "is_member": True, "is_mpim": True}, False),
+        (None, False),
+    ],
+)
+async def test_private_channel_prefix_allowlist_fails_closed(channel, expected):
+    adapter = _make_adapter(allowed_private_channel_prefixes=["b-"])
+    adapter._resolve_channel_info = AsyncMock(return_value=channel)
+
+    assert await adapter._slack_channel_is_allowed(OTHER_CHANNEL_ID, team_id="T1") is expected
+
+
+@pytest.mark.asyncio
+async def test_no_channel_allowlist_keeps_backward_compatible_open_behavior():
+    adapter = _make_adapter()
+    adapter._resolve_channel_info = AsyncMock()
+
+    assert await adapter._slack_channel_is_allowed(OTHER_CHANNEL_ID, team_id="T1") is True
+    adapter._resolve_channel_info.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

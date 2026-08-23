@@ -345,6 +345,8 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs |
 | `SLACK_ALLOW_ALL_USERS` | Allow any Slack user to trigger the bot (dev only). |
 | `SLACK_ALLOW_BOTS` | Accept messages from other Slack bots: `none` (default), `mentions`, or `all`. The bot always ignores its own messages. |
+| `SLACK_ALLOWED_CHANNELS` | Comma-separated Slack channel IDs. When set, a non-DM conversation must match an exact ID or an allowed private-channel prefix. |
+| `SLACK_ALLOWED_PRIVATE_CHANNEL_PREFIXES` | Comma-separated channel-name prefixes. Matches only private channels where Slack confirms the bot is a member; failures deny access. |
 | `SLACK_THREAD_REQUIRE_MENTION` | Require an explicit @mention for Slack thread replies while preserving top-level free-response channels |
 | `SLACK_HOME_CHANNEL` | Default Slack channel for cron delivery |
 | `SLACK_HOME_CHANNEL_NAME` | Display name for the Slack home channel |
