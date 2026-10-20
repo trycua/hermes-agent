@@ -26,6 +26,8 @@ A registered backend automatically participates in every core surface:
 | Synced cache-file path translation | `cache_path_base` |
 | Secret stripping from spawned subprocesses | `strip_env_keys` |
 | Per-session sandbox isolation (`container_persistent: false`) | `session_isolated_when_nonpersistent` |
+| Starting directory when `terminal.cwd` is unset | `default_cwd` |
+| Bot Desktop, `computer_use` and the browser running inside the backend | `supports_exec_prefix`, `exec_prefix()` |
 
 Declaring these flags on the provider closes the classic "new backend missed
 classification site N" bug class — the core consults the registry at each
@@ -129,6 +131,58 @@ interface as `tools.environments.base.BaseEnvironment`:
 
 Subclassing `BaseEnvironment` is recommended (you inherit the shared file-sync
 and background-process plumbing) but not required.
+
+## Starting directory
+
+A session starts in `terminal.cwd` when the user sets it. Otherwise the core
+uses a per-backend default, and for a plugin backend that is `/root` unless you
+override `default_cwd`:
+
+```python
+@property
+def default_cwd(self):
+    return "/workspace"   # e.g. the only path that survives a stop/start
+```
+
+Return `None` (the default) to keep `/root`. A user's `terminal.cwd` always
+wins, and a host-looking path in it is still replaced by this value on
+`is_container` backends.
+
+## Hosting the desktop (`exec_prefix`)
+
+The screen the bot works on (Xvnc and Xfce, the browser, and the `cua-driver`
+process behind `computer_use`) follows the terminal backend. For `docker`,
+`ssh` and `singularity` it runs inside the sandbox, started through the same
+command channel the terminal uses. A plugin backend takes part by naming that
+channel: set `supports_exec_prefix = True` and implement `exec_prefix()`.
+
+```python
+class AcmeBoxProvider(TerminalEnvironmentProvider):
+    supports_exec_prefix = True
+
+    def exec_prefix(self, env, *, user=None, interactive=True):
+        # Local argv that runs whatever is appended to it inside the sandbox.
+        argv = ["acmebox", "exec", env.sandbox_id]
+        if interactive:
+            argv.append("--stdin")
+        if user:
+            argv += ["--user", user]
+        return argv + ["--"]
+```
+
+- `env` is an environment this provider created. Return `None` when it has no
+  live sandbox to exec into.
+- The client must keep argument boundaries the way `docker exec` does, and keep
+  stdin open when `interactive` is true: the desktop holds long-lived stdio
+  streams (the RFB relay, `cua-driver mcp`). A client that joins its arguments
+  into one string, like `ssh`, needs a small wrapper that quotes them.
+- Honor `user` when the client can switch accounts, otherwise ignore it.
+- The sandbox image needs the desktop stack, exactly as for the built-in
+  backends (see [Bot Screen](../user-guide/features/bot-screen.md)).
+
+Without `supports_exec_prefix` nothing changes: `bot_desktop.placement: auto`
+refuses a sandbox backend rather than run the screen on the gateway host beside
+it, and the user can still opt in to the host with `placement: gateway`.
 
 ## Session isolation semantics
 

@@ -8,7 +8,8 @@ stdin/stdout as pipes". Each spawn-per-call backend has a local argv prefix that
 (``docker exec -i``, ``ssh``, ``apptainer exec``); this module is the one place that knows it.
 
 SDK backends (modal, daytona, vercel) have no argv prefix: ``exec_prefix`` returns None there and
-the desktop stays on the gateway host (or refuses, per ``bot_desktop.placement``).
+the desktop stays on the gateway host (or refuses, per ``bot_desktop.placement``). A plugin backend
+supplies its prefix through ``TerminalEnvironmentProvider.exec_prefix``.
 """
 from __future__ import annotations
 
@@ -21,11 +22,24 @@ from typing import Optional, Sequence
 from tools.environments.base import BaseEnvironment
 
 
+def _plugin_exec_prefix(env: BaseEnvironment, user: Optional[str], interactive: bool) -> Optional[list[str]]:
+    """The prefix a plugin backend's provider declares for ``env`` (stamped ``_hermes_backend_name`` by the
+    terminal factory), or None when the backend is not a plugin or its provider has not opted in."""
+    from agent.terminal_env_registry import get_provider
+
+    name = getattr(env, "_hermes_backend_name", None)
+    provider = get_provider(name) if name else None
+    if provider is None or not provider.supports_exec_prefix:
+        return None
+    return provider.exec_prefix(env, user=user, interactive=interactive)
+
+
 def exec_prefix(env: BaseEnvironment, *, user: Optional[str] = None, interactive: bool = True) -> Optional[list[str]]:
     """Local argv that runs its remainder inside ``env``, or None for backends without one.
 
-    ``user`` selects the sandbox-side account (docker only; ssh runs as the configured login, apptainer as
-    the caller). ``interactive`` keeps stdin open (``docker exec -i``); ssh and apptainer always do.
+    ``user`` selects the sandbox-side account (docker, and plugins that honor it; ssh runs as the configured
+    login, apptainer as the caller). ``interactive`` keeps stdin open (``docker exec -i``); ssh and apptainer
+    always do.
     """
     from tools.environments.docker import DockerEnvironment
     from tools.environments.singularity import SingularityEnvironment
@@ -47,7 +61,7 @@ def exec_prefix(env: BaseEnvironment, *, user: Optional[str] = None, interactive
         if not getattr(env, "_instance_started", False):
             return None
         return [env.executable, "exec", f"instance://{env.instance_id}"]
-    return None
+    return _plugin_exec_prefix(env, user, interactive)
 
 
 def supports_streams(env: BaseEnvironment) -> bool:

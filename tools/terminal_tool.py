@@ -702,8 +702,15 @@ def _ensure_terminal_env_bridged() -> None:
             apply_terminal_config_to_env(env=None, override=False)
 
 
-# Default cwd per backend; anything else (container backends, plugins) is "/root".
+# Default cwd per built-in backend; a plugin backend declares its own (``default_cwd``), anything else is "/root".
 _DEFAULT_CWD_BY_BACKEND = {"ssh": "~", "vercel_sandbox": _VERCEL_SANDBOX_DEFAULT_CWD}
+
+
+def _default_cwd(env_type: str) -> str:
+    """Where a session starts when ``terminal.cwd`` is not set."""
+    if env_type == "local":
+        return _safe_getcwd()
+    return _DEFAULT_CWD_BY_BACKEND.get(env_type) or _plugin_env_flag(env_type, "default_cwd", None) or "/root"
 
 
 def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
@@ -713,7 +720,7 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     path is remapped to /workspace and tracked as host_cwd; otherwise host paths
     are discarded in favor of the backend default.
     """
-    default_cwd = _safe_getcwd() if env_type == "local" else _DEFAULT_CWD_BY_BACKEND.get(env_type, "/root")
+    default_cwd = _default_cwd(env_type)
     cwd = _tenv("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):

@@ -38,11 +38,17 @@ class TerminalEnvironmentProvider(ProviderBase):
       spawns so a model-authored command can never read them.
     * ``session_isolated_when_nonpersistent`` — non-persistent mode gives each session its own
       sandbox identity; opt in when a shared name would let two ephemeral runs destroy each other.
+    * ``default_cwd`` — where a session starts when the user has not set ``terminal.cwd``, for a sandbox
+      whose home is not ``/root`` (e.g. only ``/workspace`` persists). ``None`` keeps ``/root``.
+    * ``supports_exec_prefix`` — :meth:`exec_prefix` is implemented, so the desktop that follows the terminal
+      backend (Bot Desktop, ``computer_use``, the browser) can live inside this backend like it does for docker
+      and ssh. Without it ``bot_desktop.placement`` refuses a sandbox backend rather than use the gateway host.
     """
 
     is_remote: bool = True
     is_container: bool = True
     session_isolated_when_nonpersistent: bool = False
+    supports_exec_prefix: bool = False
 
     @property
     def description(self) -> str:
@@ -60,6 +66,10 @@ class TerminalEnvironmentProvider(ProviderBase):
     @property
     def strip_env_keys(self) -> frozenset:
         return frozenset()
+
+    @property
+    def default_cwd(self) -> Optional[str]:
+        return None
 
     @property
     def env_description(self) -> str:
@@ -92,6 +102,14 @@ class TerminalEnvironmentProvider(ProviderBase):
         except Exception:
             ok = False
         return [(ok, f"{self.display_name} backend", "(configured)" if ok else "(not configured — see setup instructions)")]
+
+    def exec_prefix(self, env: Any, *, user: Optional[str] = None, interactive: bool = True) -> Optional[list[str]]:
+        """Local argv that runs the words appended to it inside *env* (one this provider created), e.g.
+        ``["acme", "exec", "-i", env.sandbox_id, "--"]``; ``None`` when there is none (yet). Consulted only when
+        :attr:`supports_exec_prefix` is True. The client must keep argument boundaries (as ``docker exec`` does)
+        and stdin open when *interactive*: the callers hold long-lived stdio streams (cua-driver's MCP server).
+        Run as *user* when given and the client can switch accounts."""
+        return None
 
     @abc.abstractmethod
     def create_environment(

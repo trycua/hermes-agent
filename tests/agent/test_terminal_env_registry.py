@@ -185,6 +185,43 @@ def test_abc_defaults():
     assert rows and rows[0][0] is True
 
 
+def test_default_cwd_and_exec_prefix_are_opt_in():
+    """A provider that declares neither keeps today's behaviour: no cwd preference, no exec channel."""
+    p = _Provider()
+    assert p.default_cwd is None
+    assert p.supports_exec_prefix is False
+    assert p.exec_prefix(_Env(), user="pn", interactive=True) is None
+
+
+def test_provider_flag_reads_default_cwd_and_exec_prefix_support():
+    class Hosted(_Provider):
+        name = "hosted"
+        supports_exec_prefix = True
+
+        @property
+        def default_cwd(self):
+            return "/workspace"
+
+    reg.register_provider(Hosted())
+    reg.register_provider(_Provider())
+    assert reg.provider_flag("hosted", "default_cwd", None) == "/workspace"
+    assert reg.provider_flag("hosted", "supports_exec_prefix") is True
+    assert reg.provider_flag("testbox", "default_cwd", None) is None
+    assert reg.provider_flag("testbox", "supports_exec_prefix") is False
+
+
+def test_provider_flag_fail_soft_on_raising_default_cwd():
+    class Broken(_Provider):
+        name = "broken"
+
+        @property
+        def default_cwd(self):
+            raise RuntimeError("boom")
+
+    reg.register_provider(Broken())
+    assert reg.provider_flag("broken", "default_cwd", None) is None
+
+
 def test_probe_needs_setup_when_unavailable():
     class Off(_Provider):
         name = "offbox"

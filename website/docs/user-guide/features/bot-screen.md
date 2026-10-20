@@ -235,7 +235,8 @@ same place. `bot_desktop.placement` decides where:
 |---|---|---|
 | `local` | gateway host | The terminal, the screen, the browser and `computer_use` all share the machine running the gateway. |
 | `docker`, `ssh`, `singularity` | **inside the sandbox** | Xvnc + Xfce, Chromium and cua-driver run in the container / on the SSH host, spawned through the same `docker exec` / `ssh` channel the terminal uses. The pane streams the sandbox's screen; nothing of the host desktop is reachable. |
-| `modal`, `daytona`, `vercel_sandbox` | **refused** | These backends cannot host a display yet. Rather than quietly running the screen on the host beside the sandbox you chose for the agent, `Start` explains and points at `placement: gateway`. |
+| a plugin backend that provides an exec prefix | **inside the sandbox** | The same as `docker` and `ssh`, through the command prefix the plugin supplies ([plugin guide](../../developer-guide/terminal-environment-plugin.md#hosting-the-desktop-exec_prefix)). |
+| `modal`, `daytona`, `vercel_sandbox`, any other plugin backend | **refused** | These backends cannot host a display yet. Rather than quietly running the screen on the host beside the sandbox you chose for the agent, `Start` explains and points at `placement: gateway`. |
 
 `placement: gateway` forces the pre-existing behaviour (screen on the gateway
 host even with a sandboxed terminal) as an explicit opt-in; `placement:

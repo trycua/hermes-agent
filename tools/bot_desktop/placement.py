@@ -2,7 +2,8 @@
 
 ``bot_desktop.placement``:
   ``auto``      (default) follow the terminal backend when it is a sandbox that can host a stream
-                (docker / ssh / singularity); the gateway host when ``terminal.backend`` is local. A
+                (docker / ssh / singularity, or a plugin backend that declares ``supports_exec_prefix``);
+                the gateway host when ``terminal.backend`` is local. A
                 sandbox backend that CANNOT host one (modal, daytona, vercel) resolves to ``refused``:
                 the user chose a sandbox for the agent's actions, so quietly running the screen, cua-driver
                 and the browser on the host beside it would hand the agent a desktop outside that sandbox.
@@ -47,6 +48,13 @@ def _terminal_backend() -> str:
     return str(_get_env_config().get("env_type") or "local")
 
 
+def _can_host_stream(backend: str) -> bool:
+    if backend in _STREAM_BACKENDS:
+        return True
+    from agent.terminal_env_registry import provider_flag
+    return bool(provider_flag(backend, "supports_exec_prefix", False))
+
+
 def resolve() -> Placement:
     # Backend first (env only): a local terminal IS the gateway host whatever the setting says, and that is
     # the common case — it must not cost a config load (this runs on every browser / cua-driver spawn).
@@ -56,7 +64,7 @@ def resolve() -> Placement:
     setting = _setting()
     if setting == GATEWAY:
         return Placement(GATEWAY, backend)
-    if backend in _STREAM_BACKENDS:
+    if _can_host_stream(backend):
         return Placement(TERMINAL, backend)
     reason = (f"terminal.backend is {backend}, which cannot host a screen yet, and running the desktop on the "
               f"gateway host would put the agent's screen, browser and computer_use outside the sandbox you chose "
