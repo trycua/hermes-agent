@@ -58,6 +58,10 @@ jobs:
   # by both route matrices, so the two routes cover the same set.
   pick-releases:
     name: Pick release tags
+    # Scheduled runs only make sense where the release tags exist. Personal
+    # forks do not carry them, and the job below would fail every 12 hours.
+    # Manual runs and tag pushes are left alone.
+    if: github.event_name != 'schedule' || github.repository_owner == 'trycua'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
