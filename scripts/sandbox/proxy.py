@@ -144,7 +144,13 @@ def close_request(request, target=None):
 
 def relay(source, destination):
     while True:
-        chunk = source.recv(MAX_REQUEST_BYTES)
+        try:
+            chunk = source.recv(MAX_REQUEST_BYTES)
+        except ssl.SSLEOFError:
+            # The upstream closed the TLS stream without a close_notify. The
+            # request already carries `Connection: close`, so that is the end
+            # of the response, not a failure.
+            return
         if not chunk:
             return
         destination.sendall(chunk)
